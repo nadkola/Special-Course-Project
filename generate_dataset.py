@@ -1,3 +1,4 @@
+
 """
 generate_dataset.py — Creates the Global Retail Sales dataset (10,000 transactions)
 Dimensions: time, geography, product, customer
