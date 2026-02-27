@@ -47,15 +47,17 @@ def get_schema_description(df: pd.DataFrame) -> str:
         f"Rows: {len(df):,}  |  Columns: {len(df.columns)}",
         f"Date range: {df['order_date'].min().date()} to {df['order_date'].max().date()}",
         "",
-        "COLUMNS (name — dtype — example values):",
+        "COLUMNS (name — dtype — unique values):",
     ]
     for col in df.columns:
         nuniq = df[col].nunique()
-        if nuniq <= 12:
-            vals = ", ".join(str(v) for v in sorted(df[col].dropna().unique())[:12])
+        if nuniq <= 25:
+            vals = sorted(df[col].dropna().unique())
+            vals_str = ", ".join(repr(v) for v in vals)
+            lines.append(f"  {col:20s}  {str(df[col].dtype):15s}  unique={nuniq:<6}  EXACT VALUES: [{vals_str}]")
         else:
-            vals = ", ".join(str(v) for v in df[col].dropna().head(4)) + " …"
-        lines.append(f"  {col:20s}  {str(df[col].dtype):15s}  unique={nuniq:<6}  [{vals}]")
+            sample = ", ".join(str(v) for v in df[col].dropna().head(4))
+            lines.append(f"  {col:20s}  {str(df[col].dtype):15s}  unique={nuniq:<6}  sample: [{sample} …]")
 
     lines += [
         "",
@@ -72,6 +74,15 @@ def get_schema_description(df: pd.DataFrame) -> str:
         "  revenue = quantity × unit_price",
         "  profit  = revenue − cost",
         "  profit_margin = (profit / revenue) × 100",
+        "",
+        "⚠️  CRITICAL FILTER VALUES — use EXACTLY these strings/numbers:",
+        f"  year:             {sorted(df['year'].unique().tolist())}",
+        f"  quarter:          {sorted(df['quarter'].unique().tolist())}",
+        f"  region:           {sorted(df['region'].unique().tolist())}",
+        f"  category:         {sorted(df['category'].unique().tolist())}",
+        f"  subcategory:      {sorted(df['subcategory'].unique().tolist())}",
+        f"  customer_segment: {sorted(df['customer_segment'].unique().tolist())}",
+        f"  country:          {sorted(df['country'].unique().tolist())}",
     ]
     return "\n".join(lines)
 
