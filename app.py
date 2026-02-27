@@ -78,11 +78,26 @@ with st.sidebar:
     # --- LLM Provider Selection ---
     st.subheader("⚙️ LLM Configuration")
     provider = st.selectbox("Provider", ["Anthropic (Claude)", "OpenAI (GPT)"], index=0)
-    api_key = st.text_input(
-        "API Key",
-        type="password",
-        help="Enter your Anthropic or OpenAI API key. It stays in your browser session.",
-    )
+
+    # Auto-load API key from secrets.toml, fall back to manual input
+    saved_key = ""
+    try:
+        if "Anthropic" in provider and "ANTHROPIC_API_KEY" in st.secrets:
+            saved_key = st.secrets["ANTHROPIC_API_KEY"]
+        elif "OpenAI" in provider and "OPENAI_API_KEY" in st.secrets:
+            saved_key = st.secrets["OPENAI_API_KEY"]
+    except Exception:
+        pass
+
+    if saved_key:
+        api_key = saved_key
+        st.success("✅ API key loaded from secrets")
+    else:
+        api_key = st.text_input(
+            "API Key",
+            type="password",
+            help="Enter your API key here, or save it in .streamlit/secrets.toml to auto-load.",
+        )
 
     # Model selection
     if "Anthropic" in provider:
@@ -125,13 +140,13 @@ with st.sidebar:
     st.subheader("⚡ Quick Queries")
     quick_queries = {
         "Revenue by Region": "Show total revenue by region",
-        "2024 by Quarter": "Break down 2024 revenue by quarter",
+        "2025 by Quarter": "Break down 2025 revenue by quarter",
         "Electronics in Europe": "Show Electronics sales in Europe by country",
-        "2023 vs 2024": "Compare 2023 vs 2024 total revenue by region",
+        "2024 vs 2025": "Compare 2024 vs 2025 total revenue by region",
+        "3-Year Trend": "Show yearly revenue trend for 2023, 2024, and 2025",
         "Top 5 Countries": "What are the top 5 countries by profit?",
-        "Monthly Trend 2024": "Show monthly revenue trend for 2024",
+        "Monthly Trend 2025": "Show monthly revenue trend for 2025",
         "Category Margins": "Which category has the highest profit margin?",
-        "Worst Subcategory": "Identify the worst-performing subcategory by profit",
     }
     for label, query in quick_queries.items():
         if st.button(f"▶ {label}", use_container_width=True, key=f"quick_{label}"):
@@ -229,7 +244,36 @@ def execute_pandas_code(code: str, dataframe: pd.DataFrame) -> pd.DataFrame | No
             else:
                 raise SecurityError(f"Blocked potentially unsafe operation: {pattern}")
 
-    # Prepare execution namespace
+    # Prepare execution namespace with safe builtins
+    safe_builtins = {
+        "round": round,
+        "len": len,
+        "min": min,
+        "max": max,
+        "sum": sum,
+        "abs": abs,
+        "sorted": sorted,
+        "range": range,
+        "list": list,
+        "dict": dict,
+        "tuple": tuple,
+        "set": set,
+        "str": str,
+        "int": int,
+        "float": float,
+        "bool": bool,
+        "enumerate": enumerate,
+        "zip": zip,
+        "map": map,
+        "filter": filter,
+        "isinstance": isinstance,
+        "type": type,
+        "print": print,
+        "True": True,
+        "False": False,
+        "None": None,
+    }
+
     namespace = {
         "df": dataframe.copy(),
         "pd": pd,
@@ -237,7 +281,7 @@ def execute_pandas_code(code: str, dataframe: pd.DataFrame) -> pd.DataFrame | No
         "result": None,
     }
 
-    exec(code, {"__builtins__": {}}, namespace)
+    exec(code, {"__builtins__": safe_builtins}, namespace)
 
     result = namespace.get("result")
     if result is None:
@@ -394,32 +438,86 @@ if query:
                     if analysis:
                         st.markdown(analysis)
 
-                    # Execute code
-                    if code:
+                    # Execute code (with auto-retry on failure)
+                    max_retries = 2
+                    attempt = 0
+
+                    while code and attempt < max_retries:
+                        attempt += 1
                         try:
                             result_df = execute_pandas_code(code, df)
 
-                            # Display results
+                            # Check if result is empty
                             if result_df is not None and not result_df.empty:
-                                with st.expander("📋 Data Table", expanded=True):
-                                    st.dataframe(
-                                        result_df,
-                                        use_container_width=True,
-                                        hide_index=True,
-                                    )
-                                auto_chart(result_df)
+                                break  # Success — exit retry loop
                             else:
-                                st.info("The query returned no results. Try adjusting your filters.")
+                                # Empty result — ask LLM to fix
+                                if attempt < max_retries:
+                                    retry_msg = (
+                                        f"Your code executed but returned an EMPTY DataFrame (0 rows). "
+                                        f"This means your filters matched nothing. "
+                                        f"Here are the EXACT values available in the dataset:\n"
+                                        f"  years: {sorted(df['year'].unique().tolist())}\n"
+                                        f"  quarters: {sorted(df['quarter'].unique().tolist())}\n"
+                                        f"  regions: {sorted(df['region'].unique().tolist())}\n"
+                                        f"  categories: {sorted(df['category'].unique().tolist())}\n"
+                                        f"  countries: {sorted(df['country'].unique().tolist())}\n"
+                                        f"  segments: {sorted(df['customer_segment'].unique().tolist())}\n"
+                                        f"Please fix your code to use only these exact values. "
+                                        f"Original question: {query}"
+                                    )
+                                    retry_conv = conv_for_llm + [
+                                        {"role": "assistant", "content": raw_response},
+                                        {"role": "user", "content": retry_msg},
+                                    ]
+                                    raw_response = call_llm(retry_msg, retry_conv)
+                                    parsed = parse_llm_response(raw_response)
+                                    code = parsed["code"]
+                                    if parsed["analysis"]:
+                                        analysis = parsed["analysis"]
+                                else:
+                                    error_msg = "⚠️ The query returned no data after retrying. The filters may not match any records."
 
                         except SecurityError as se:
                             error_msg = f"🔒 Security: {se}"
-                            st.error(error_msg)
+                            break
                         except Exception as exec_err:
-                            error_msg = f"⚠️ Code execution error: {exec_err}"
-                            st.error(error_msg)
-                            st.caption("The LLM-generated code encountered an error. Try rephrasing your question.")
+                            if attempt < max_retries:
+                                # Send error to LLM for self-correction
+                                retry_msg = (
+                                    f"Your code raised an error: {exec_err}\n"
+                                    f"The failing code was:\n```python\n{code}\n```\n"
+                                    f"Please fix the code. Remember: use only pd, np, df. "
+                                    f"Assign the result to `result`. "
+                                    f"Original question: {query}"
+                                )
+                                retry_conv = conv_for_llm + [
+                                    {"role": "assistant", "content": raw_response},
+                                    {"role": "user", "content": retry_msg},
+                                ]
+                                raw_response = call_llm(retry_msg, retry_conv)
+                                parsed = parse_llm_response(raw_response)
+                                code = parsed["code"]
+                                if parsed["analysis"]:
+                                    analysis = parsed["analysis"]
+                            else:
+                                error_msg = f"⚠️ Code execution error: {exec_err}"
 
-                        # Always show the generated code
+                    # Display results
+                    if result_df is not None and not result_df.empty:
+                        with st.expander("📋 Data Table", expanded=True):
+                            st.dataframe(
+                                result_df,
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+                        auto_chart(result_df)
+                    elif error_msg:
+                        st.error(error_msg)
+                        st.caption("Try rephrasing your question or check the Generated Code below.")
+
+                    # Always show the generated code
+                    if code:
                         with st.expander("🔧 Generated Code"):
                             st.code(code, language="python")
 
@@ -456,6 +554,6 @@ if query:
 st.divider()
 st.caption(
     "💡 **Tip:** Try questions like *'Total revenue by region'*, "
-    "*'Compare 2023 vs 2024'*, or *'Drill down Q4 2024 by month'*. "
+    "*'Compare 2023 vs 2024 vs 2025'*, or *'Drill down Q4 2025 by month'*. "
     "Use the Quick Queries in the sidebar to get started."
 )
