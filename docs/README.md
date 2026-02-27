@@ -207,7 +207,7 @@ Bot:  [Analysis + Comparison Table + Chart]
 | Attribute    | Value                                                        |
 |-------------|--------------------------------------------------------------|
 | Records      | 10,000 transactions                                          |
-| Time Period  | January 2022 – December 2024                                 |
+| Time Period  | January 2023 – December 2025                                 |
 | Regions      | North America, Europe, Asia Pacific, Latin America            |
 | Categories   | Electronics, Furniture, Office Supplies, Clothing             |
 | Segments     | Consumer, Corporate, Home Office                              |
